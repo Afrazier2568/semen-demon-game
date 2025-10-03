@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Semen Demon — Web Game</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root{color-scheme:dark}
+  body{background:#0a0a0a;color:#e5e5e5;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto}
+  canvas{background:radial-gradient(1200px 600px at 50% 10%, #1f1f1f 0%, #0f0f0f 60%, #0a0a0a 100%); border-radius:1.25rem; box-shadow:0 10px 40px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.06)}
+  .btn{background:white;color:black;padding:.65rem 1rem;border-radius:.85rem;font-weight:700}
+  .hud{position:absolute;inset:0;pointer-events:none}
+  .hud > *{pointer-events:auto}
+  .floating{animation:float 3.8s ease-in-out infinite}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+</style>
+</head>
+<body>
+  <div class="max-w-5xl mx-auto p-4">
+    <header class="flex items-center justify-between gap-4 mb-3">
+      <div class="flex items-center gap-3">
+        <div class="h-9 w-9 rounded-lg bg-white flex items-center justify-center"><span class="text-black font-black text-xs">SD</span></div>
+        <h1 class="text-xl font-extrabold">Semen Demon — Mini Runner</h1>
+      </div>
+      <div class="hidden md:flex items-center gap-2 text-sm text-neutral-300">
+        <span>Move: <b>WASD/←→↑↓</b></span>
+        <span class="opacity-40">•</span>
+        <span>Dash: <b>Space</b></span>
+        <span class="opacity-40">•</span>
+        <span>Pause: <b>P</b></span>
+      </div>
+    </header>
+
+    <div class="relative">
+      <canvas id="game" width="960" height="540" class="w-full"></canvas>
+
+      <!-- HUD overlay -->
+      <div class="hud">
+        <div class="absolute top-3 left-4 flex items-center gap-3">
+          <div id="score" class="text-lg font-bold">0</div>
+          <div class="text-neutral-400">best: <span id="best">0</span></div>
+        </div>
+        <div class="absolute top-3 right-4 flex items-center gap-2">
+          <button id="btnPause" class="btn">Pause</button>
+          <button id="btnRestart" class="btn">Restart</button>
+        </div>
+
+        <!-- Start screen -->
+        <div id="start" class="absolute inset-0 grid place-items-center">
+          <div class="text-center bg-white/5 backdrop-blur rounded-2xl p-6 ring-1 ring-white/10 floating">
+            <h2 class="text-2xl font-extrabold mb-2">Ready to wiggle?</h2>
+            <p class="text-neutral-300 mb-4">Dodge the red orbs, grab the pink shards, and survive as long as you can.</p>
+            <ul class="text-sm text-neutral-300 mb-5 space-y-1">
+              <li>Move: <b>WASD / Arrow Keys</b></li>
+              <li>Dash: <b>Space</b> (short burst, 4s cooldown)</li>
+              <li>Mobile: drag or use on-screen controls</li>
+            </ul>
+            <button id="btnStart" class="btn">Play</button>
+          </div>
+        </div>
+
+        <!-- Mobile controls -->
+        <div class="absolute bottom-3 left-3 flex gap-2 md:hidden">
+          <button class="btn" data-dir="left">◀</button>
+          <button class="btn" data-dir="up">▲</button>
+          <button class="btn" data-dir="down">▼</button>
+          <button class="btn" data-dir="right">▶</button>
+          <button class="btn" id="btnDash">Dash</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="mt-4 text-sm text-neutral-400">100% parody. Be kind.</footer>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  canvas.width = Math.floor(canvas.clientWidth * dpr);
+  canvas.height = Math.floor(canvas.clientWidth * 9/16 * dpr);
+  const W = canvas.width, H = canvas.height;
+
+  const $ = sel => document.querySelector(sel);
+  const scoreEl = $('#score');
+  const bestEl = $('#best');
+  const startScreen = $('#start');
+  const btnStart = $('#btnStart');
+  const btnPause = $('#btnPause');
+  const btnRestart = $('#btnRestart');
+  const btnDash = $('#btnDash');
+  const btnsDir = Array.from(document.querySelectorAll('[data-dir]'));
+
+  let running = false, paused = false;
+  let t = 0, last = 0;
+  let score = 0; let best = +localStorage.getItem('sd_best') || 0; bestEl.textContent = best;
+  let hazards = []; let shards = [];
+
+  const player = {
+    x: W*0.2, y: H*0.5, r: 18*dpr, vx: 0, vy: 0, speed: 0.26*dpr,
+    dash: 0, dashCD: 0,
+  };
+
+  function reset() {
+    running = true; paused = false; t = 0; last = performance.now();
+    score = 0; hazards = []; shards = [];
+    player.x = W*0.2; player.y = H*0.5; player.vx = 0; player.vy = 0; player.dash = 0; player.dashCD = 0;
+  }
+
+  const keys = new Set();
+  window.addEventListener('keydown', e => {
+    if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d','W','A','S','D'].includes(e.key)) keys.add(e.key.toLowerCase());
+    if(e.code === 'Space') doDash();
+    if(e.key.toLowerCase()==='p') togglePause();
+  });
+  window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+  btnsDir.forEach(b => b.addEventListener('touchstart', e => { e.preventDefault(); keys.add(b.dataset.dir); }));
+  btnsDir.forEach(b => b.addEventListener('touchend',   e => { e.preventDefault(); keys.delete(b.dataset.dir); }));
+  btnDash?.addEventListener('touchstart', e => { e.preventDefault(); doDash(); });
+
+  function togglePause(){ if(!running) return; paused = !paused; }
+  function doDash(){ if(player.dashCD<=0){ player.dash = 220*dpr; player.dashCD = 2400; } }
+
+  function spawnHazard(){
+    const r = (10 + Math.random()*16) * dpr;
+    const y = r + Math.random()*(H - 2*r);
+    const vx = - (0.18 + Math.random()*0.22) * dpr * (1 + Math.min(1, t/60000));
+    hazards.push({x: W + r, y, r, vx});
+  }
+  function spawnShard(){
+    const r = (8 + Math.random()*10) * dpr;
+    const y = r + Math.random()*(H - 2*r);
+    const vx = - (0.16 + Math.random()*0.18) * dpr * (1 + Math.min(1, t/60000));
+    shards.push({x: W + r, y, r, vx});
+  }
+
+  function drawPlayer(p){
+    // Tail
+    ctx.strokeStyle = '#fda4af';
+    ctx.lineWidth = 4*dpr; ctx.lineCap = 'round';
+    const wag = Math.sin(t/140)*18*dpr;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y + p.r*0.3);
+    ctx.quadraticCurveTo(p.x - p.r*2, p.y + wag, p.x - p.r*4, p.y + wag*0.5);
+    ctx.stroke();
+
+    // Head (demonic sperm oval)
+    const g = ctx.createLinearGradient(p.x-p.r, p.y-p.r, p.x+p.r, p.y+p.r);
+    g.addColorStop(0,'#111'); g.addColorStop(1,'#444');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y, p.r*1.3, p.r*1.6, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Eyes
+    ctx.fillStyle = 'white';
+    ctx.beginPath(); ctx.ellipse(p.x - p.r*0.4, p.y - p.r*0.2, p.r*0.3, p.r*0.2, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(p.x + p.r*0.4, p.y - p.r*0.2, p.r*0.3, p.r*0.2, 0, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'black';
+    ctx.beginPath(); ctx.arc(p.x - p.r*0.4, p.y - p.r*0.2, p.r*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(p.x + p.r*0.4, p.y - p.r*0.2, p.r*0.1, 0, Math.PI*2); ctx.fill();
+
+    // Mouth with fangs
+    ctx.strokeStyle = 'white'; ctx.lineWidth = 2*dpr;
+    ctx.beginPath(); ctx.moveTo(p.x - p.r*0.5, p.y + p.r*0.4); ctx.lineTo(p.x + p.r*0.5, p.y + p.r*0.4); ctx.stroke();
+    ctx.fillStyle = 'white';
+    ctx.beginPath(); ctx.moveTo(p.x - p.r*0.3, p.y + p.r*0.4); ctx.lineTo(p.x - p.r*0.2, p.y + p.r*0.7); ctx.lineTo(p.x - p.r*0.1, p.y + p.r*0.4); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(p.x + p.r*0.1, p.y + p.r*0.4); ctx.lineTo(p.x + p.r*0.2, p.y + p.r*0.7); ctx.lineTo(p.x + p.r*0.3, p.y + p.r*0.4); ctx.fill();
+
+    // Horns
+    ctx.strokeStyle = 'white'; ctx.lineWidth = 3*dpr; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(p.x - p.r*0.6, p.y - p.r*1.0); ctx.lineTo(p.x - p.r*1.0, p.y - p.r*1.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.x + p.r*0.6, p.y - p.r*1.0); ctx.lineTo(p.x + p.r*1.0, p.y - p.r*1.5); ctx.stroke();
+  }
+
+  function drawHazard(h){ ctx.fillStyle='#ef4444'; ctx.beginPath(); ctx.arc(h.x, h.y, h.r, 0, Math.PI*2); ctx.fill(); }
+  function drawShard(c){ ctx.fillStyle='#f472b6'; ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI*2); ctx.fill(); }
+
+  function step(ts){
+    if(!running){ requestAnimationFrame(step); return; }
+    const dt = Math.min(34, ts - last); last = ts; if(paused){ requestAnimationFrame(step); return; }
+    t += dt; score += dt*0.01; scoreEl.textContent = Math.floor(score);
+    if(player.dash>0) player.dash -= dt; if(player.dashCD>0) player.dashCD -= dt;
+
+    const accel = player.speed * (player.dash>0? 3.2 : 1);
+    const up = keys.has('arrowup')||keys.has('w')||keys.has('up');
+    const down = keys.has('arrowdown')||keys.has('s')||keys.has('down');
+    const left = keys.has('arrowleft')||keys.has('a')||keys.has('left');
+    const right = keys.has('arrowright')||keys.has('d')||keys.has('right');
+
+    player.vx = (right? accel:0) - (left? accel:0);
+    player.vy = (down?  accel:0) - (up?   accel:0);
+    player.x = Math.max(player.r, Math.min(W-player.r, player.x + player.vx*dt));
+    player.y = Math.max(player.r, Math.min(H-player.r, player.y + player.vy*dt));
+
+    if(Math.random() < 0.012 * (1 + t/25000)) spawnHazard();
+    if(Math.random() < 0.009 * (1 + t/30000)) spawnShard();
+
+    hazards.forEach(h=> h.x += h.vx*dt); hazards = hazards.filter(h=> h.x > -h.r);
+    shards.forEach(c=> c.x += c.vx*dt); shards = shards.filter(c=> c.x > -c.r);
+
+    for(let h of hazards){
+      const dx = h.x - player.x, dy = h.y - player.y; const rr = (h.r + player.r*0.85); if(dx*dx + dy*dy < rr*rr){
+        running = false; paused = false; startScreen.style.display='grid';
+        startScreen.querySelector('h2').textContent = 'Game Over!';
+        startScreen.querySelector('p').textContent = `Score: ${Math.floor(score)}`;
+        best = Math.max(best, Math.floor(score)); localStorage.setItem('sd_best', best); bestEl.textContent = best;
+      }
+    }
+    for(let i = shards.length-1; i>=0; --i){
+      const c = shards[i]; const dx = c.x - player.x, dy = c.y - player.y; const rr = (c.r + player.r*0.8);
+      if(dx*dx + dy*dy < rr*rr){ shards.splice(i,1); score += 30; }
+    }
+
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    for(let i=0;i<40;i++){ const x=(i*97 + t*0.02)%W; const y=((i*53)%H); ctx.fillRect(x, y, 2*dpr, 2*dpr); }
+
+    shards.forEach(drawShard); hazards.forEach(drawHazard); drawPlayer(player);
+
+    requestAnimationFrame(step);
+  }
+
+  btnStart.addEventListener('click', () => { startScreen.style.display='none'; reset(); });
+  btnPause.addEventListener('click', togglePause);
+  btnRestart.addEventListener('click', () => { startScreen.style.display='none'; reset(); });
+
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
